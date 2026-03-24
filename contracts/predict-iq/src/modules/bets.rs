@@ -6,7 +6,11 @@ use soroban_sdk::{contracttype, token, Address, Env};
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    Bet(u64, Address), // market_id, bettor
+    /// Uniquely identifies a single bet: (market_id, bettor, outcome).
+    /// Including `outcome` ensures each outcome position is stored independently,
+    /// preventing key collisions when a bettor participates in multiple outcomes
+    /// and guaranteeing complete storage cleanup on refund/claim.
+    Bet(u64, Address, u32), // market_id, bettor, outcome
 }
 
 pub fn place_bet(
@@ -70,17 +74,13 @@ pub fn place_bet(
         &amount,
     )?;
 
-    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet_key = DataKey::Bet(market_id, bettor.clone(), outcome);
     let mut existing_bet: Bet = e.storage().persistent().get(&bet_key).unwrap_or(Bet {
         market_id,
         bettor: bettor.clone(),
         outcome,
         amount: 0,
     });
-
-    if existing_bet.amount > 0 && existing_bet.outcome != outcome {
-        return Err(ErrorCode::CannotChangeOutcome);
-    }
 
     existing_bet.amount += amount;
     market.total_staked += amount;
@@ -101,10 +101,10 @@ pub fn place_bet(
     Ok(())
 }
 
-pub fn get_bet(e: &Env, market_id: u64, bettor: Address) -> Option<Bet> {
+pub fn get_bet(e: &Env, market_id: u64, bettor: Address, outcome: u32) -> Option<Bet> {
     e.storage()
         .persistent()
-        .get(&DataKey::Bet(market_id, bettor))
+        .get(&DataKey::Bet(market_id, bettor, outcome))
 }
 
 pub fn claim_winnings(
@@ -125,7 +125,7 @@ pub fn claim_winnings(
         .winning_outcome
         .ok_or(ErrorCode::MarketNotPendingResolution)?;
 
-    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet_key = DataKey::Bet(market_id, bettor.clone(), winning_outcome);
     let bet: Bet = e
         .storage()
         .persistent()
@@ -157,6 +157,7 @@ pub fn withdraw_refund(
     e: &Env,
     bettor: Address,
     market_id: u64,
+    outcome: u32,
     token_address: Address,
 ) -> Result<i128, ErrorCode> {
     bettor.require_auth();
@@ -167,7 +168,7 @@ pub fn withdraw_refund(
         return Err(ErrorCode::MarketNotActive);
     }
 
-    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet_key = DataKey::Bet(market_id, bettor.clone(), outcome);
     let bet: Bet = e
         .storage()
         .persistent()
@@ -180,7 +181,7 @@ pub fn withdraw_refund(
     let client = token::Client::new(e, &token_address);
     client.transfer(&e.current_contract_address(), &bettor, &refund_amount);
 
-    // Remove bet record
+    // Remove this outcome's bet record — no orphan data left
     e.storage().persistent().remove(&bet_key);
 
     // Emit standardized RewardsClaimed event (refund variant)
