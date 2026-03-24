@@ -84,10 +84,10 @@ pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128,
     // Use SAC-safe transfer for refund
     sac::safe_transfer(e, &market.token_address, &e.current_contract_address(), &bettor, &refund_amount)?;
     
-    e.events().publish(
-        (Symbol::new(e, "refund_withdrawn"), market_id, bettor),
-        refund_amount,
-    );
+    // Emit standardized RewardsClaimed event (refund variant), aligned with bets.rs standard
+    // Topics: [reward_fx, market_id, bettor]
+    // Data: (refund_amount, token_address, is_refund=true)
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, market.token_address, true);
     
     Ok(refund_amount)
 }

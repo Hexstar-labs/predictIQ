@@ -148,7 +148,7 @@ pub fn claim_winnings(
 
     // Emit standardized RewardsClaimed event
     // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, winnings, false);
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, winnings, token_address, false);
 
     Ok(winnings)
 }
@@ -185,7 +185,7 @@ pub fn withdraw_refund(
 
     // Emit standardized RewardsClaimed event (refund variant)
     // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, true);
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, token_address, true);
 
     Ok(refund_amount)
 }
