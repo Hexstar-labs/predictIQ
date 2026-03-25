@@ -5,9 +5,9 @@ use soroban_sdk::{contracttype, token, Address, Env, Symbol};
 
 #[contracttype]
 pub enum DataKey {
-    Vote(u64, Address),         // market_id, voter
-    VoteTally(u64, u32),        // market_id, outcome -> total_weight
-    LockedTokens(u64, Address), // market_id, voter
+    Vote(u64, Address),         // market_id, voter - variant index 0 ensures unique serialization
+    VoteTally(u64, u32),        // market_id, outcome -> total_weight - variant index 1
+    LockedTokens(u64, Address), // market_id, voter - variant index 2 ensures unique serialization
 }
 
 pub fn cast_vote(
@@ -30,8 +30,15 @@ pub fn cast_vote(
     }
 
     let vote_key = DataKey::Vote(market_id, voter.clone());
-    if e.storage().persistent().has(&vote_key) {
-        return Err(ErrorCode::AlreadyVoted);
+    
+    // Issue #175: Allow vote revision - if vote exists, update the tally
+    let old_vote: Option<Vote> = e.storage().persistent().get(&vote_key);
+    if let Some(old_vote_data) = old_vote {
+        // Decrement the old outcome tally
+        let old_tally_key = DataKey::VoteTally(market_id, old_vote_data.outcome);
+        let mut old_tally: i128 = e.storage().persistent().get(&old_tally_key).unwrap_or(0);
+        old_tally -= old_vote_data.weight;
+        e.storage().persistent().set(&old_tally_key, &old_tally);
     }
 
     let snapshot_ledger = market
