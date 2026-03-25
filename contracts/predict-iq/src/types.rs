@@ -23,7 +23,7 @@ pub struct Market {
     pub winning_outcome: Option<u32>,
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
-    pub payout_mode: PayoutMode, // New: determines push vs pull payouts
+    pub payout_mode: PayoutMode, // Resolution-time mode flag; payouts are currently claimed via claim_winnings
     pub tier: MarketTier,
     pub creation_deposit: i128,
     pub parent_id: u64,          // 0 means no parent (independent market)
@@ -39,8 +39,8 @@ pub struct Market {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PayoutMode {
-    Push, // Contract distributes to all winners (small markets)
-    Pull, // Winners claim individually (large markets)
+    Push, // Reserved compatibility flag; automatic push distribution is not implemented
+    Pull, // Active payout path: winners claim individually via claim_winnings
 }
 
 #[contracttype]
@@ -100,7 +100,7 @@ pub struct OracleConfig {
 }
 
 // Gas optimization constants
-pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
+pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Winner-count threshold for mode selection metadata
 /// Hard cap on outcomes per market. Kept intentionally low to bound the
 /// iteration cost in `calculate_voting_outcome` (called from the permissionless
 /// `finalize_resolution`) and prevent gas-griefing / DoS attacks.
@@ -120,6 +120,7 @@ pub enum ConfigKey {
     PendingUpgrade,
     UpgradeVotes,
     GovernanceToken,
+    MaxPushPayoutWinners,
 }
 
 #[contracttype]
