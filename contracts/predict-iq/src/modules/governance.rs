@@ -238,12 +238,12 @@ pub fn execute_upgrade(e: &Env) -> Result<(), ErrorCode> {
 }
 
 /// Get vote statistics for the pending upgrade.
-pub fn get_upgrade_votes(e: &Env) -> Result<(u32, u32), ErrorCode> {
+pub fn get_upgrade_votes(e: &Env) -> Result<crate::types::UpgradeStats, ErrorCode> {
     let pending_upgrade = get_pending_upgrade(e).ok_or(ErrorCode::UpgradeNotInitiated)?;
-    Ok((
-        pending_upgrade.votes_for.len() as u32,
-        pending_upgrade.votes_against.len() as u32,
-    ))
+    Ok(crate::types::UpgradeStats {
+        votes_for: pending_upgrade.votes_for.len() as u32,
+        votes_against: pending_upgrade.votes_against.len() as u32,
+    })
 }
 
 /// Emergency pause triggered by 2/3 Guardian majority (community panic override)
