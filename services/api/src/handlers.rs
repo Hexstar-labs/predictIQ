@@ -5,14 +5,16 @@ use std::{
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use validator::ValidateEmail;
 
-use crate::{cache::keys, AppState};
+use crate::{cache::keys, email::webhook::sendgrid_webhook_handler, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -49,6 +51,335 @@ pub struct FeaturedMarketView {
 
 pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewsletterSubscribeRequest {
+    pub email: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewsletterEmailRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewsletterConfirmQuery {
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewsletterExportQuery {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NewsletterResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NewsletterExportResponse {
+    pub success: bool,
+    pub data: crate::db::NewsletterSubscriber,
+}
+
+fn normalized_email(raw: &str) -> Option<String> {
+    let candidate = raw.trim().to_lowercase();
+    if candidate.validate_email() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn is_disposable_email(email: &str) -> bool {
+    const DISPOSABLE_DOMAINS: &[&str] = &["mailinator.com", "tempmail.com", "guerrillamail.com"];
+
+    email
+        .rsplit_once('@')
+        .map(|(_, domain)| DISPOSABLE_DOMAINS.contains(&domain))
+        .unwrap_or(false)
+}
+
+fn client_ip(headers: &HeaderMap) -> String {
+    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+        if let Some(ip) = forwarded_for.split(',').next() {
+            let ip = ip.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
+        let ip = real_ip.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+
+    "unknown".to_string()
+}
+
+pub async fn newsletter_subscribe(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<NewsletterSubscribeRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ip = client_ip(&headers);
+    let allowed = state
+        .newsletter_rate_limiter
+        .allow(&ip, 5, Duration::from_secs(15 * 60))
+        .await;
+
+    if !allowed {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        ));
+    }
+
+    let email = match normalized_email(&payload.email) {
+        Some(value) => value,
+        None => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "Invalid email address.".to_string(),
+                }),
+            ));
+        }
+    };
+
+    if is_disposable_email(&email) {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Disposable emails are not allowed.".to_string(),
+            }),
+        ));
+    }
+
+    let source = payload
+        .source
+        .unwrap_or_else(|| "direct".to_string())
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>();
+    let source = if source.is_empty() {
+        "direct".to_string()
+    } else {
+        source
+    };
+
+    if let Some(existing) = state
+        .db
+        .newsletter_get_by_email(&email)
+        .await
+        .map_err(into_api_error)?
+    {
+        if existing.confirmed && existing.unsubscribed_at.is_none() {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "Email already subscribed.".to_string(),
+                }),
+            ));
+        }
+    }
+
+    let token = Uuid::new_v4().to_string();
+    state
+        .db
+        .newsletter_upsert_pending(&email, &source, &token)
+        .await
+        .map_err(into_api_error)?;
+
+    // Queue confirmation email instead of sending directly
+    let confirm_url = format!(
+        "{}/api/v1/newsletter/confirm?token={token}",
+        state.config.base_url.trim_end_matches('/')
+    );
+
+    let template_data = serde_json::json!({
+        "confirm_url": confirm_url,
+        "email": email
+    });
+
+    state
+        .email_queue
+        .enqueue(
+            crate::email::types::EmailJobType::NewsletterConfirmation,
+            &email,
+            "newsletter_confirmation",
+            template_data,
+            0,
+        )
+        .await
+        .map_err(into_api_error)?;
+
+    tracing::info!("[newsletter] subscription attempt email={email} source={source} ip={ip}");
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "Please check your email to confirm your subscription.".to_string(),
+        }),
+    ))
+}
+
+pub async fn newsletter_confirm(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<NewsletterConfirmQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    if query.token.trim().is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Missing confirmation token.".to_string(),
+            }),
+        ));
+    }
+
+    let updated = state
+        .db
+        .newsletter_confirm_by_token(query.token.trim())
+        .await
+        .map_err(into_api_error)?;
+
+    if !updated {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid or expired confirmation token.".to_string(),
+            }),
+        ));
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "Subscription confirmed.".to_string(),
+        }),
+    ))
+}
+
+pub async fn newsletter_unsubscribe(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<NewsletterEmailRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        ));
+    };
+
+    let _ = state
+        .db
+        .newsletter_unsubscribe(&email)
+        .await
+        .map_err(into_api_error)?;
+
+    tracing::info!("[newsletter] unsubscribed email={email}");
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "Successfully unsubscribed.".to_string(),
+        }),
+    ))
+}
+
+pub async fn newsletter_gdpr_export(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<NewsletterExportQuery>,
+) -> Result<Response, ApiError> {
+    let Some(email) = normalized_email(&query.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    let data = state
+        .db
+        .newsletter_get_by_email(&email)
+        .await
+        .map_err(into_api_error)?;
+
+    let Some(data) = data else {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(NewsletterResponse {
+                success: false,
+                message: "No newsletter record found.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterExportResponse {
+            success: true,
+            data,
+        }),
+    )
+        .into_response())
+}
+
+pub async fn newsletter_gdpr_delete(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<NewsletterEmailRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        ));
+    };
+
+    let _ = state
+        .db
+        .newsletter_gdpr_delete(&email)
+        .await
+        .map_err(into_api_error)?;
+
+    tracing::info!("[newsletter] gdpr delete email={email}");
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "Data deleted.".to_string(),
+        }),
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -299,4 +630,105 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = statistics(State(state.clone())).await;
     let _ = featured_markets(State(state)).await;
     Ok(())
+}
+
+// Email service handlers
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailTestRequest {
+    pub recipient: String,
+    pub template_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailAnalyticsQuery {
+    pub template_name: Option<String>,
+    pub days: Option<i32>,
+}
+
+pub async fn email_preview(
+    State(state): State<Arc<AppState>>,
+    Path(template_name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let test_data = match template_name.as_str() {
+        "newsletter_confirmation" => serde_json::json!({
+            "confirm_url": format!("{}/api/v1/newsletter/confirm?token=test-token-123", state.config.base_url),
+            "email": "test@example.com"
+        }),
+        "waitlist_confirmation" => serde_json::json!({
+            "email": "test@example.com"
+        }),
+        "contact_form_auto_response" => serde_json::json!({
+            "name": "Test User",
+            "subject": "Test Subject",
+            "message": "This is a test message."
+        }),
+        "welcome_email" => serde_json::json!({
+            "name": "Test User",
+            "dashboard_url": format!("{}/dashboard", state.config.base_url),
+            "help_url": format!("{}/help", state.config.base_url),
+            "unsubscribe_url": format!("{}/api/v1/newsletter/unsubscribe", state.config.base_url)
+        }),
+        _ => serde_json::json!({}),
+    };
+
+    let preview = state
+        .email_service
+        .preview_email(&template_name, &test_data)
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(preview)))
+}
+
+pub async fn email_send_test(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EmailTestRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let message_id = state
+        .email_service
+        .send_test_email(&payload.recipient, &payload.template_name)
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": "Test email sent successfully",
+            "message_id": message_id
+        })),
+    ))
+}
+
+pub async fn email_analytics(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<EmailAnalyticsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let days = query.days.unwrap_or(30).clamp(1, 365);
+    let analytics = state
+        .db
+        .email_get_analytics(query.template_name.as_deref(), days)
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(analytics)))
+}
+
+pub async fn email_queue_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stats = state
+        .email_queue
+        .get_stats()
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(stats)))
+}
+
+pub async fn sendgrid_webhook(
+    State(state): State<Arc<AppState>>,
+    Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), Json(events)).await
 }
