@@ -15,9 +15,18 @@ pub struct PredictIQ;
 
 #[contractimpl]
 impl PredictIQ {
-    pub fn initialize(e: Env, admin: Address, base_fee: i128) -> Result<(), ErrorCode> {
+    pub fn initialize(
+        e: Env,
+        admin: Address,
+        base_fee: i128,
+        guardians: Vec<crate::types::Guardian>,
+    ) -> Result<(), ErrorCode> {
         if e.storage().persistent().has(&ConfigKey::Admin) {
             return Err(ErrorCode::AlreadyInitialized);
+        }
+
+        if guardians.is_empty() {
+            return Err(ErrorCode::NotAuthorized);
         }
 
         admin::set_admin(&e, admin);
@@ -26,6 +35,7 @@ impl PredictIQ {
             &ConfigKey::CircuitBreakerState,
             &CircuitBreakerState::Closed,
         );
+        crate::modules::governance::initialize_guardians(&e, guardians)?;
         Ok(())
     }
 
@@ -209,14 +219,6 @@ impl PredictIQ {
     }
 
     // Governance and Upgrade Functions
-    pub fn initialize_guardians(
-        e: Env,
-        guardians: Vec<crate::types::Guardian>,
-    ) -> Result<(), ErrorCode> {
-        crate::modules::admin::require_admin(&e)?;
-        crate::modules::governance::initialize_guardians(&e, guardians)
-    }
-
     pub fn add_guardian(e: Env, guardian: crate::types::Guardian) -> Result<(), ErrorCode> {
         crate::modules::governance::add_guardian(&e, guardian)
     }

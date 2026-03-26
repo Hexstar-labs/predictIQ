@@ -8,10 +8,15 @@ fn setup_test_env() -> (Env, Address, soroban_sdk::Address, PredictIQClient<'sta
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let contract_id = e.register_contract(None, PredictIQ);
+    let contract_id = e.register(PredictIQ, ());
     let client = PredictIQClient::new(&e, &contract_id);
 
-    client.initialize(&admin, &100); // 1% fee
+    let init_guardians = {
+        let mut g = soroban_sdk::Vec::new(&e);
+        g.push_back(types::Guardian { address: Address::generate(&e), voting_power: 1 });
+        g
+    };
+    client.initialize(&admin, &100, &init_guardians);
 
     (e, admin, contract_id, client)
 }
@@ -32,6 +37,8 @@ fn create_test_market(
         oracle_address: Address::generate(e),
         feed_id: String::from_str(e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     client.create_market(
@@ -75,6 +82,8 @@ fn test_market_creation_fails_without_deposit() {
             oracle_address: Address::generate(&e),
             feed_id: String::from_str(&e, "test"),
             min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         },
         &types::MarketTier::Basic,
         &native_token,
@@ -774,6 +783,8 @@ fn test_create_conditional_market_parent_not_resolved() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let result = client.try_create_market(
@@ -823,6 +834,8 @@ fn test_create_conditional_market_parent_wrong_outcome() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let result = client.try_create_market(
@@ -872,6 +885,8 @@ fn test_create_conditional_market_success() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let child_id = client.create_market(
@@ -930,6 +945,8 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let child_id = client.create_market(
@@ -988,6 +1005,8 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let child_id = client.create_market(
@@ -1067,6 +1086,8 @@ fn test_multi_level_conditional_markets() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let level2_id = client.create_market(
@@ -1134,6 +1155,8 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let result = client.try_create_market(

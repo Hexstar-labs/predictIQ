@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
 use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD, PRUNE_GRACE_PERIOD};
-use soroban_sdk::{contracttype, token, Address, Env, String, Vec, Map};
+use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
 
 #[contracttype]
 pub enum DataKey {

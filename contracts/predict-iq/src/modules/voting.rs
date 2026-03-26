@@ -123,7 +123,7 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
         .ok_or(ErrorCode::BetNotFound)?;
 
     if e.ledger().timestamp() < locked.unlock_time {
-        return Err(ErrorCode::VotingNotStarted);
+        return Err(ErrorCode::TimelockActive);
     }
 
     let gov_token: Address = e
