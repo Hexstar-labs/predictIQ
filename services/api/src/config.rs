@@ -1,4 +1,9 @@
-use std::{env, net::SocketAddr, str::FromStr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+    time::Duration,
+};
 
 #[derive(Clone, Debug)]
 pub enum BlockchainNetwork {
@@ -36,6 +41,12 @@ pub struct Config {
     pub sync_market_ids: Vec<i64>,
     pub featured_limit: i64,
     pub content_default_page_size: i64,
+    pub sendgrid_api_key: Option<String>,
+    pub from_email: Option<String>,
+    pub base_url: String,
+    pub api_keys: Vec<String>,
+    pub admin_whitelist_ips: Vec<IpAddr>,
+    pub request_signing_secret: Option<String>,
 }
 
 impl Config {
@@ -111,6 +122,22 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(20),
+            sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
+            from_email: env::var("FROM_EMAIL").ok(),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            api_keys: env::var("API_KEYS")
+                .ok()
+                .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
+                .unwrap_or_default(),
+            admin_whitelist_ips: env::var("ADMIN_WHITELIST_IPS")
+                .ok()
+                .map(|ips| {
+                    ips.split(',')
+                        .filter_map(|ip| ip.trim().parse::<IpAddr>().ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
         }
     }
 
