@@ -96,7 +96,7 @@ pub struct OracleConfig {
     pub max_staleness_seconds: u64,
     pub max_confidence_bps: u64,
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
-    pub max_staleness_seconds: i64, // Max age of price data in seconds
+    pub max_staleness_seconds: u64, // Max age of price data in seconds
     pub max_confidence_bps: u64,    // Max confidence interval in basis points
 }
 

@@ -1,4 +1,32 @@
 #![cfg(test)]
+
+//! Comprehensive tests for Oracle price validation, with focus on confidence threshold rounding.
+//!
+//! # Issue #260: Confidence Threshold Rounding
+//!
+//! The confidence validation formula is: `max_conf = (price_abs * max_confidence_bps) / 10000`
+//!
+//! ## Problem
+//! Integer division can introduce bias for small prices:
+//! - price=1, bps=500 (5%): (1 * 500) / 10000 = 0 (truncates, should be ~0.05)
+//! - price=10, bps=100 (1%): (10 * 100) / 10000 = 0 (truncates, should be ~0.1)
+//! - price=100, bps=100 (1%): (100 * 100) / 10000 = 1 (correct)
+//!
+//! This causes a **downward bias** for small prices, making it harder to accept prices
+//! with any confidence interval at very small valuations.
+//!
+//! ## Potential Solutions
+//! 1. **Ceiling division**: Use `(price * bps + 9999) / 10000` to round up
+//! 2. **Fixed-point math**: Scale up before division to preserve precision
+//! 3. **Reverse formula**: Check `(price * bps) >= (conf * 10000)` to avoid division
+//!
+//! ## Test Coverage
+//! - `test_confidence_rounding_small_prices`: Tests 1-100 range prices
+//! - `test_confidence_rounding_large_prices`: Tests million+ range prices
+//! - `test_confidence_rounding_edge_cases_low_prices`: Targets specific rounding boundaries
+//! - `test_confidence_rounding_negative_prices`: Validates absolute value handling
+//! - `test_confidence_rounding_boundary_conditions`: Documents exact rounding behavior
+
 use super::oracles::*;
 use crate::errors::ErrorCode;
 use crate::types::OracleConfig;
@@ -11,6 +39,25 @@ fn test_config(e: &Env) -> OracleConfig {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+    }
+}
+
+fn create_config(e: &Env, max_confidence_bps: u64) -> OracleConfig {
+    OracleConfig {
+        oracle_address: Address::generate(e),
+        feed_id: String::from_str(e, "test_feed"),
+        min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps,
+    }
+}
+
+fn create_price(price: i64, conf: u64, timestamp: u64) -> PythPrice {
+    PythPrice {
+        price,
+        conf,
+        expo: -2,
+        publish_time: timestamp,
     }
 }
 
