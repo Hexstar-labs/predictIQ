@@ -10,6 +10,8 @@ mod query_tests;
 mod test_tie_handling;
 #[cfg(test)]
 mod test_payout_mode_immutability;
+#[cfg(test)]
+mod test_cancellation_referral;
 pub mod types;
 
 pub use errors::ErrorCode;
