@@ -8,6 +8,8 @@ mod test;
 mod query_tests;
 #[cfg(test)]
 mod test_tie_handling;
+#[cfg(test)]
+mod test_payout_mode_immutability;
 pub mod types;
 
 pub use errors::ErrorCode;
