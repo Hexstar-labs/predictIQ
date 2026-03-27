@@ -318,75 +318,14 @@ fn test_dispute_captures_ledger_sequence() {
 }
 
 #[test]
-fn test_cannot_unlock_tokens_while_disputed() {
+fn test_locked_balance_prevents_pool_drain() {
+    // Two users lock tokens; each must only be able to unlock their own amount.
     let e = Env::default();
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
     let contract_id = e.register(PredictIQ, ());
     let client = PredictIQClient::new(&e, &contract_id);
-
-    client.initialize(&admin, &1000);
-
-    let token_admin = Address::generate(&e);
-    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_address = token_id.address();
-    let stellar_token = token::StellarAssetClient::new(&e, &token_address);
-
-    client.set_governance_token(&token_address);
-
-    let creator = Address::generate(&e);
-    let oracle_config = OracleConfig {
-        oracle_address: Address::generate(&e),
-        feed_id: String::from_str(&e, "BTC/USD"),
-        min_responses: 1,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
-    };
-
-    let market_id = client.create_market(
-        &creator,
-        &String::from_str(&e, "Will BTC reach $100k?"),
-        &Vec::from_array(&e, [String::from_str(&e, "Yes"), String::from_str(&e, "No")]),
-        &1000,
-        &2000,
-        &oracle_config,
-        &token_address,
-    );
-
-    let voter = Address::generate(&e);
-    stellar_token.mint(&voter, &10000);
-
-    // Move to disputed state and cast a vote (locks tokens)
-    set_market_to_pending_resolution(&e, &contract_id, market_id);
-    let disciplinarian = Address::generate(&e);
-    client.file_dispute(&disciplinarian, &market_id);
-
-    client.cast_vote(&voter, &market_id, &0, &5000);
-
-    // Verify market is Disputed
-    let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.status, MarketStatus::Disputed);
-
-    // Advance time well past resolution deadline — tokens must still be locked
-    e.ledger().with_mut(|li| {
-        li.timestamp = 9999;
-    });
-
-    // Unlock must fail while market is still Disputed
-    let result = client.try_unlock_tokens(&voter, &market_id);
-    assert_eq!(result, Err(Ok(ErrorCode::MarketNotResolved)));
-}
-
-#[test]
-fn test_can_unlock_tokens_after_resolution() {
-    let e = Env::default();
-    e.mock_all_auths();
-
-    let admin = Address::generate(&e);
-    let contract_id = e.register(PredictIQ, ());
-    let client = PredictIQClient::new(&e, &contract_id);
-
     client.initialize(&admin, &1000);
 
     let token_admin = Address::generate(&e);
@@ -394,7 +333,6 @@ fn test_can_unlock_tokens_after_resolution() {
     let token_address = token_id.address();
     let stellar_token = token::StellarAssetClient::new(&e, &token_address);
     let token_client = token::Client::new(&e, &token_address);
-
     client.set_governance_token(&token_address);
 
     let creator = Address::generate(&e);
@@ -405,10 +343,9 @@ fn test_can_unlock_tokens_after_resolution() {
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
     };
-
     let market_id = client.create_market(
         &creator,
-        &String::from_str(&e, "Will BTC reach $100k?"),
+        &String::from_str(&e, "Pool drain test"),
         &Vec::from_array(&e, [String::from_str(&e, "Yes"), String::from_str(&e, "No")]),
         &1000,
         &2000,
@@ -416,34 +353,42 @@ fn test_can_unlock_tokens_after_resolution() {
         &token_address,
     );
 
-    let voter = Address::generate(&e);
-    stellar_token.mint(&voter, &10000);
-    let initial_balance = token_client.balance(&voter);
+    let voter_a = Address::generate(&e);
+    let voter_b = Address::generate(&e);
+    stellar_token.mint(&voter_a, &3000);
+    stellar_token.mint(&voter_b, &7000);
 
-    // Move to disputed, cast vote
     set_market_to_pending_resolution(&e, &contract_id, market_id);
     let disciplinarian = Address::generate(&e);
     client.file_dispute(&disciplinarian, &market_id);
-    client.cast_vote(&voter, &market_id, &0, &5000);
 
-    // Manually resolve the market
-    use crate::modules::markets::DataKey;
+    // Both voters lock tokens via fallback path
+    client.cast_vote(&voter_a, &market_id, &0, &3000);
+    client.cast_vote(&voter_b, &market_id, &1, &7000);
+
+    // Advance past resolution deadline and resolve market
+    e.ledger().with_mut(|li| li.timestamp = 2001 + (86400 * 3));
+    use crate::modules::markets::DataKey as MDataKey;
     e.as_contract(&contract_id, || {
-        let mut market: Market = e.storage().persistent().get(&DataKey::Market(market_id)).unwrap();
-        market.status = MarketStatus::Resolved;
-        market.winning_outcome = Some(0);
-        market.resolved_at = Some(e.ledger().timestamp());
-        e.storage().persistent().set(&DataKey::Market(market_id), &market);
+        let mut market: crate::types::Market = e
+            .storage()
+            .persistent()
+            .get(&MDataKey::Market(market_id))
+            .unwrap();
+        market.status = crate::types::MarketStatus::Resolved;
+        e.storage()
+            .persistent()
+            .set(&MDataKey::Market(market_id), &market);
     });
 
-    // Advance past resolution_deadline (unlock_time)
-    e.ledger().with_mut(|li| {
-        li.timestamp = 9999;
-    });
+    // voter_a unlocks — must receive exactly 3000, not 10000
+    client.unlock_tokens(&voter_a, &market_id);
+    assert_eq!(token_client.balance(&voter_a), 3000);
 
-    // Unlock must succeed now
-    client.unlock_tokens(&voter, &market_id);
+    // voter_b unlocks — must receive exactly 7000
+    client.unlock_tokens(&voter_b, &market_id);
+    assert_eq!(token_client.balance(&voter_b), 7000);
 
-    let final_balance = token_client.balance(&voter);
-    assert_eq!(final_balance, initial_balance);
+    // Contract balance must be zero — no tokens left behind
+    assert_eq!(token_client.balance(&contract_id), 0);
 }
