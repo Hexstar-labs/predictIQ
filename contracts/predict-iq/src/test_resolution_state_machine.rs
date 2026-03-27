@@ -882,3 +882,109 @@ fn test_resolved_at_populated_after_dispute_resolution() {
     assert_eq!(market.resolved_at, Some(finalize_time));
 }
 
+
+// ── Dispute window exact-boundary tests ──────────────────────────────────────
+//
+// The dispute window condition in file_dispute is:
+//   CLOSED  when  now >= pending_ts + window   (>= semantics)
+//   OPEN    when  now <  pending_ts + window
+//
+// The finalize_resolution condition is the mirror:
+//   ALLOWED when  now >= pending_ts + window
+//   BLOCKED when  now <  pending_ts + window
+//
+// All six tests below use deterministic timestamps:
+//   pending_ts = 10_000
+//   window     = 259_200  (default 72 h)
+//   boundary   = 269_200  (= pending_ts + window)
+
+const PENDING_TS: u64 = 10_000;
+const WINDOW: u64 = 259_200;
+const BOUNDARY: u64 = PENDING_TS + WINDOW; // 269_200
+
+fn setup_pending_market(client: &PredictIQClient, e: &Env) -> u64 {
+    let market_id = create_test_market(client, e, PENDING_TS);
+    client.set_oracle_result(&market_id, &0, &0);
+    e.ledger().with_mut(|li| li.timestamp = PENDING_TS);
+    client.attempt_oracle_resolution(&market_id);
+    market_id
+}
+
+// ── file_dispute boundary ────────────────────────────────────────────────────
+
+/// T = boundary - 1: window still open → dispute ALLOWED.
+#[test]
+fn test_dispute_window_boundary_minus_one_dispute_allowed() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY - 1);
+    client.file_dispute(&disputer, &market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Disputed);
+}
+
+/// T = boundary (exact): window is closed → dispute REJECTED.
+#[test]
+fn test_dispute_window_boundary_exact_dispute_rejected() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY);
+    let result = client.try_file_dispute(&disputer, &market_id);
+    assert_eq!(result, Err(Ok(ErrorCode::DisputeWindowClosed)));
+}
+
+/// T = boundary + 1: window is closed → dispute REJECTED.
+#[test]
+fn test_dispute_window_boundary_plus_one_dispute_rejected() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY + 1);
+    let result = client.try_file_dispute(&disputer, &market_id);
+    assert_eq!(result, Err(Ok(ErrorCode::DisputeWindowClosed)));
+}
+
+// ── finalize_resolution boundary ─────────────────────────────────────────────
+
+/// T = boundary - 1: window still open → finalize BLOCKED.
+#[test]
+fn test_dispute_window_boundary_minus_one_finalize_blocked() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY - 1);
+    let result = client.try_finalize_resolution(&market_id);
+    assert_eq!(result, Err(Ok(ErrorCode::DisputeWindowStillOpen)));
+}
+
+/// T = boundary (exact): window just closed → finalize ALLOWED.
+#[test]
+fn test_dispute_window_boundary_exact_finalize_allowed() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY);
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+}
+
+/// T = boundary + 1: window closed → finalize ALLOWED.
+#[test]
+fn test_dispute_window_boundary_plus_one_finalize_allowed() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = setup_pending_market(&client, &e);
+
+    e.ledger().with_mut(|li| li.timestamp = BOUNDARY + 1);
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+}
