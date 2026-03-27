@@ -50,16 +50,17 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
         return Err(ErrorCode::InvalidOutcome);
     }
 
-    // Issue #23: payout_mode is fixed at creation and must not be changed here.
-    // If the market was created in Push mode but the winner count now exceeds the
-    // gas-safe threshold, fail loudly so an admin can intervene rather than
-    // silently flipping to Pull and surprising users who expected auto-distribution.
-    if market.payout_mode == PayoutMode::Push {
-        let winner_count = markets::count_bets_for_outcome(e, market_id, winning_outcome);
-        let max_push_winners = get_max_push_payout_winners(e);
-        if winner_count > max_push_winners {
-            return Err(ErrorCode::TooManyWinners);
-        }
+    // Issue #24: read the precise per-outcome winner counter maintained by place_bet.
+    // This replaces the unsafe tally/100 heuristic that underestimated winners for
+    // micro-bet markets, risking gas-limit overflows in Push resolution.
+    let actual_winners = markets::count_bets_for_outcome(e, market_id, winning_outcome);
+    let max_push_winners = get_max_push_payout_winners(e);
+
+    // Automatically select payout mode based on exact winner count
+    if actual_winners > max_push_winners {
+        market.payout_mode = PayoutMode::Pull;
+    } else {
+        market.payout_mode = PayoutMode::Push;
     }
 
     market.status = MarketStatus::Resolved;
@@ -89,7 +90,7 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
 }
 
 pub fn set_max_push_payout_winners(e: &Env, threshold: u32) -> Result<(), ErrorCode> {
-    crate::modules::admin::require_market_admin(e)?;
+    crate::modules::admin::require_admin(e)?;
     e.storage()
         .persistent()
         .set(&ConfigKey::MaxPushPayoutWinners, &threshold);

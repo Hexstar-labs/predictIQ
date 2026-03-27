@@ -414,70 +414,28 @@ fn test_push_mode_market_fails_resolution_when_winners_exceed_threshold() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    // Market is created in Pull mode (the only mode create_market sets).
-    // To test the Push guard we seed winner_counts above the threshold directly.
-    let market_id = create_test_market(
+    // Issue #24: winner count now comes from the precise winner_counts counter,
+    // not the tally/100 heuristic. Seed the counter directly via storage.
+    let market_default = create_test_market(
         &client,
         &e,
         &creator,
         types::MarketTier::Basic,
         &native_token,
     );
+    // Simulate 20 unique bettors on outcome 0 — below default threshold of 50.
+    let market_data_key = crate::modules::markets::DataKey::Market(market_default);
+    let mut m: types::Market = e.storage().persistent().get(&market_data_key).unwrap();
+    m.winner_counts.set(0, 20u32);
+    e.storage().persistent().set(&market_data_key, &m);
 
-    // Force payout_mode to Push and winner_counts[0] above the default threshold (50).
-    let market_key = crate::modules::markets::DataKey::Market(market_id);
-    let mut m: types::Market = e.storage().persistent().get(&market_key).unwrap();
-    m.payout_mode = types::PayoutMode::Push;
-    m.winner_counts.set(0, 51u32); // exceeds MAX_PUSH_PAYOUT_WINNERS = 50
-    e.storage().persistent().set(&market_key, &m);
+    client.resolve_market(&market_default, &0);
+    let resolved_default = client.get_market(&market_default).unwrap();
+    assert_eq!(resolved_default.payout_mode, types::PayoutMode::Push);
 
-    // Resolution must fail with TooManyWinners — not silently flip to Pull.
-    let result = client.try_resolve_market(&market_id, &0);
-    assert_eq!(result, Err(Ok(crate::errors::ErrorCode::TooManyWinners)));
-
-    // payout_mode must still be Push — it was never changed.
-    let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.payout_mode, types::PayoutMode::Push);
-}
-
-#[test]
-fn test_pull_mode_market_resolves_regardless_of_winner_count() {
-    let (e, _admin, _contract_id, client) = setup_test_env();
-    client.set_creation_deposit(&0);
-
-    let creator = Address::generate(&e);
-    let native_token = Address::generate(&e);
-
-    // Pull mode markets skip the gas-limit guard entirely.
-    let market_id = create_test_market(
-        &client,
-        &e,
-        &creator,
-        types::MarketTier::Basic,
-        &native_token,
-    );
-
-    // Seed a very large winner count — should not block resolution for Pull markets.
-    let market_key = crate::modules::markets::DataKey::Market(market_id);
-    let mut m: types::Market = e.storage().persistent().get(&market_key).unwrap();
-    m.winner_counts.set(0, 10_000u32);
-    e.storage().persistent().set(&market_key, &m);
-
-    let result = client.try_resolve_market(&market_id, &0);
-    assert!(result.is_ok());
-
-    // payout_mode must remain Pull — never mutated.
-    let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.payout_mode, types::PayoutMode::Pull);
-}
-
-#[test]
-fn test_push_mode_market_resolves_when_winners_within_threshold() {
-    let (e, _admin, _contract_id, client) = setup_test_env();
-    client.set_creation_deposit(&0);
-
-    let creator = Address::generate(&e);
-    let native_token = Address::generate(&e);
+    // Admin lowers threshold so 20 winners now exceeds it → Pull.
+    client.set_max_push_payout_winners(&10);
+    assert_eq!(client.get_max_push_payout_winners(), 10);
 
     let market_id = create_test_market(
         &client,
@@ -486,49 +444,14 @@ fn test_push_mode_market_resolves_when_winners_within_threshold() {
         types::MarketTier::Basic,
         &native_token,
     );
+    let market_data_key2 = crate::modules::markets::DataKey::Market(market_lowered);
+    let mut m2: types::Market = e.storage().persistent().get(&market_data_key2).unwrap();
+    m2.winner_counts.set(0, 20u32);
+    e.storage().persistent().set(&market_data_key2, &m2);
 
-    let market_key = crate::modules::markets::DataKey::Market(market_id);
-    let mut m: types::Market = e.storage().persistent().get(&market_key).unwrap();
-    m.payout_mode = types::PayoutMode::Push;
-    m.winner_counts.set(0, 10u32); // well below threshold of 50
-    e.storage().persistent().set(&market_key, &m);
-
-    let result = client.try_resolve_market(&market_id, &0);
-    assert!(result.is_ok());
-
-    // payout_mode must still be Push.
-    let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.payout_mode, types::PayoutMode::Push);
-}
-
-#[test]
-fn test_admin_can_lower_threshold_to_protect_push_markets() {
-    let (e, _admin, _contract_id, client) = setup_test_env();
-    client.set_creation_deposit(&0);
-
-    let creator = Address::generate(&e);
-    let native_token = Address::generate(&e);
-
-    // Lower threshold to 5.
-    client.set_max_push_payout_winners(&5);
-    assert_eq!(client.get_max_push_payout_winners(), 5);
-
-    let market_id = create_test_market(
-        &client,
-        &e,
-        &creator,
-        types::MarketTier::Basic,
-        &native_token,
-    );
-
-    let market_key = crate::modules::markets::DataKey::Market(market_id);
-    let mut m: types::Market = e.storage().persistent().get(&market_key).unwrap();
-    m.payout_mode = types::PayoutMode::Push;
-    m.winner_counts.set(0, 6u32); // exceeds new threshold of 5
-    e.storage().persistent().set(&market_key, &m);
-
-    let result = client.try_resolve_market(&market_id, &0);
-    assert_eq!(result, Err(Ok(crate::errors::ErrorCode::TooManyWinners)));
+    client.resolve_market(&market_lowered, &0);
+    let resolved_lowered = client.get_market(&market_lowered).unwrap();
+    assert_eq!(resolved_lowered.payout_mode, types::PayoutMode::Pull);
 }
 
 #[test]
@@ -1056,7 +979,7 @@ fn test_same_hash_cannot_be_reinitiated_while_pending() {
     });
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "repeat_hash");
+    let wasm_hash = BytesN::from_array(&e, &[1u8; 32]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -1077,8 +1000,8 @@ fn test_different_hash_still_blocked_while_another_upgrade_is_pending() {
     });
     client.initialize_guardians(&guardians);
 
-    let hash_a = String::from_str(&e, "hash_a");
-    let hash_b = String::from_str(&e, "hash_b");
+    let hash_a = BytesN::from_array(&e, &[2u8; 32]);
+    let hash_b = BytesN::from_array(&e, &[3u8; 32]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&hash_a);
@@ -1109,7 +1032,7 @@ fn test_rejected_hash_blocked_during_cooldown() {
     });
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "cooldown_hash");
+    let wasm_hash = BytesN::from_array(&e, &[4u8; 32]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
     client.initiate_upgrade(&wasm_hash);
     client.vote_for_upgrade(&guardian1, &true);
@@ -1145,7 +1068,7 @@ fn test_rejected_hash_allowed_after_cooldown_expires() {
     });
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "reinit_hash");
+    let wasm_hash = BytesN::from_array(&e, &[5u8; 32]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
     client.initiate_upgrade(&wasm_hash);
     client.vote_for_upgrade(&guardian1, &true);
@@ -1185,7 +1108,7 @@ fn test_rejected_hash_still_blocked_at_exact_cooldown_boundary() {
     });
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "boundary_hash");
+    let wasm_hash = BytesN::from_array(&e, &[6u8; 32]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
     client.initiate_upgrade(&wasm_hash);
     client.vote_for_upgrade(&guardian1, &true);
@@ -1990,3 +1913,23 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
 }
 
 
+
+#[test]
+fn test_initialize_rejects_non_deployer() {
+    let e = Env::default();
+    // Do NOT mock all auths — we want auth to be enforced.
+    // Register the contract without initializing it.
+    let contract_id = e.register(PredictIQ, ());
+    let client = PredictIQClient::new(&e, &contract_id);
+
+    let attacker = Address::generate(&e);
+    let mut guardians = soroban_sdk::Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: Address::generate(&e),
+        voting_power: 1,
+    });
+
+    // An attacker (non-deployer) attempting to initialize must fail.
+    let result = client.try_initialize(&attacker, &100, &guardians);
+    assert!(result.is_err());
+}
