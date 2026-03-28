@@ -202,7 +202,7 @@ fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u3
     let mut tie: bool = false;
 
     for outcome in 0..num_outcomes {
-        let tally = voting::get_tally(e, market.id, outcome);
+        let tally: i128 = voting::get_tally(e, market.id, outcome);
         total_votes += tally;
         if tally > max_votes {
             max_votes = tally;
