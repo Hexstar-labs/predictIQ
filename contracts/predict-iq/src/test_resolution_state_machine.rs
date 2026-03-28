@@ -1076,3 +1076,71 @@ fn test_disputed_market_finalizes_after_dispute_timestamp_plus_72h() {
     assert_eq!(market.status, types::MarketStatus::Resolved);
     assert_eq!(market.winning_outcome, Some(1));
 }
+
+// ── Issue: Zero votes on disputed finalization must return NoMajorityReached ──
+
+/// Disputed market with no votes cast must fail finalization with NoMajorityReached,
+/// not succeed or panic with an unrelated error.
+#[test]
+fn test_disputed_finalization_with_zero_votes_returns_no_majority() {
+    let (e, _admin, _, client) = setup_test_env();
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    // No votes cast. Advance past the 72h voting period.
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000 + 259_200);
+
+    let result = client.try_finalize_resolution(&market_id);
+    assert_eq!(result, Err(Ok(ErrorCode::NoMajorityReached)));
+}
+
+// ── Cross-module InvalidOutcome assertions ────────────────────────────────────
+
+/// resolve_market (disputes module) with an out-of-range outcome must return InvalidOutcome.
+#[test]
+fn test_resolve_market_invalid_outcome() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = create_test_market(&client, &e, 2000);
+
+    let result = client.try_resolve_market(&market_id, &99);
+    assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}
+
+/// set_oracle_result with an out-of-range outcome must return InvalidOutcome.
+#[test]
+fn test_set_oracle_result_invalid_outcome() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = create_test_market(&client, &e, 2000);
+
+    // Market has 2 outcomes (0, 1); outcome 99 is out of range.
+    let result = client.try_set_oracle_result(&market_id, &0, &99);
+    assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}
+
+/// cast_vote (voting module) with an out-of-range outcome must return InvalidOutcome.
+#[test]
+fn test_cast_vote_invalid_outcome() {
+    let (e, _admin, _, client) = setup_test_env();
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    let voter = Address::generate(&e);
+    let result = client.try_cast_vote(&voter, &market_id, &99, &1);
+    assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}
