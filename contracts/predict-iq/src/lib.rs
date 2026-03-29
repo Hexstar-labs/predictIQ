@@ -9,7 +9,7 @@ pub mod types;
 
 pub use errors::ErrorCode;
 
-use crate::modules::admin;
+use crate::modules::{admin, queries};
 use crate::types::{CircuitBreakerState, ConfigKey, UpgradeStats};
 
 #[contract]
@@ -104,6 +104,26 @@ impl PredictIQ {
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
         crate::modules::markets::get_market(&e, id)
+    }
+
+    /// Paginated market list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_markets(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Market> {
+        queries::get_markets(&e, offset, limit)
+    }
+
+    /// Paginated market list filtered by status. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_markets_by_status(
+        e: Env,
+        status: crate::types::MarketStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<crate::types::Market> {
+        queries::get_markets_by_status(&e, status, offset, limit)
+    }
+
+    /// Paginated guardian list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_guardians_paginated(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Guardian> {
+        queries::get_guardians_paginated(&e, offset, limit)
     }
 
     pub fn get_outcome_stake(e: Env, market_id: u64, outcome: u32) -> i128 {
