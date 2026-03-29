@@ -6,6 +6,7 @@ use std::{
 };
 
 use axum::{
+    body::Body,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
@@ -330,8 +331,44 @@ pub async fn ip_whitelist_middleware(
     Ok(next.run(request).await)
 }
 
-/// Request signing verification for sensitive operations
-pub mod signing {
+/// SendGrid webhook signature verification middleware.
+///
+/// Verifies the `X-Twilio-Email-Event-Webhook-Signature` header using HMAC-SHA256
+/// against the raw request body. When `SENDGRID_WEBHOOK_SECRET` is not configured
+/// the middleware passes through (permissive default for local dev).
+///
+/// # OpenAPI policy
+/// Route: `POST /webhooks/sendgrid`
+/// Auth: provider-signed (SendGrid HMAC) — no API key required.
+pub async fn sendgrid_webhook_middleware(
+    State(secret): State<Option<String>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if let Some(ref secret) = secret {
+        let sig = headers
+            .get("x-twilio-email-event-webhook-signature")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+        if !signing::verify_signature(&bytes, sig, secret) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        let request = Request::from_parts(parts, Body::from(bytes));
+        return Ok(next.run(request).await);
+    }
+
+    Ok(next.run(request).await)
+}
+
+
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
