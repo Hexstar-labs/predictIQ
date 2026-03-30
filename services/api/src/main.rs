@@ -24,7 +24,7 @@ use db::Database;
 use email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler};
 use metrics::Metrics;
 use newsletter::IpRateLimiter;
-use security::{ApiKeyAuth, IpWhitelist, RateLimiter};
+use security::{ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimiter};
 use tokio::net::TcpListener;
 use tower_http::{
     compression::CompressionLayer,
@@ -72,6 +72,11 @@ async fn main() -> anyhow::Result<()> {
     let rate_limiter = Arc::new(RateLimiter::new());
     let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
     let ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
+    let metrics_auth = Arc::new(MetricsAuthConfig::new(
+        config.metrics_public,
+        config.metrics_allowlist_ips.clone(),
+        api_key_auth.clone(),
+    ));
 
     // Start rate limiter cleanup task
     let rate_limiter_cleanup = rate_limiter.clone();
@@ -117,7 +122,6 @@ async fn main() -> anyhow::Result<()> {
     // Public routes (with global rate limiting)
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
-        .route("/metrics", get(handlers::metrics))
         .route("/api/blockchain/health", get(handlers::blockchain_health))
         .route(
             "/api/blockchain/markets/:market_id",
@@ -201,8 +205,36 @@ async fn main() -> anyhow::Result<()> {
             "/webhooks/sendgrid",
             post(handlers::sendgrid_webhook),
         )
+        .layer(middleware::from_fn_with_state(
+            ip_whitelist.clone(),
+            security::ip_whitelist_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            api_key_auth.clone(),
+            security::api_key_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Metrics endpoint — protected by API key + optional IP allowlist.
+    // Set METRICS_PUBLIC=true to disable auth (only for trusted internal networks).
+    // Set METRICS_ALLOWLIST_IPS=<comma-separated IPs> to restrict by source IP.
+    let metrics_routes = Router::new()
+        .route("/metrics", get(handlers::metrics))
+        .layer(middleware::from_fn_with_state(
+            metrics_auth,
+            security::metrics_auth_middleware,
+        ))
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .merge(public_routes.with_state(state.clone()))
+        .merge(newsletter_routes.with_state(state.clone()))
+        .merge(admin_routes)
+        .merge(metrics_routes)
+        .layer(cors)
+        .layer(middleware::from_fn(security::security_headers_middleware))
+        .layer(CompressionLayer::new());
 
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!("API listening on {bind_addr}");

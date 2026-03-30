@@ -563,4 +563,33 @@ impl Database {
 
         Ok(analytics)
     }
+
+    /// Persist a market resolution outcome.
+    ///
+    /// Updates the `resolved_outcome` column on the `markets` table and records
+    /// the resolution timestamp. Returns an error if the market does not exist or
+    /// has already been resolved.
+    pub async fn resolve_market(
+        &self,
+        market_id: i64,
+        outcome_index: u32,
+    ) -> anyhow::Result<()> {
+        let rows_affected = sqlx::query(
+            "UPDATE markets
+             SET resolved_outcome = $1, resolved_at = NOW()
+             WHERE id = $2 AND resolved_outcome IS NULL",
+        )
+        .bind(outcome_index as i32)
+        .bind(market_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        anyhow::ensure!(
+            rows_affected == 1,
+            "market {market_id} not found or already resolved"
+        );
+
+        Ok(())
+    }
 }

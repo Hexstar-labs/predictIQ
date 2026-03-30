@@ -502,39 +502,67 @@ pub struct InvalidationResult {
     pub invalidated_keys: usize,
 }
 
+/// Resolve a market by its ID.
+///
+/// Workflow:
+/// 1. Fetch the current market state from the blockchain.
+/// 2. Persist the resolved outcome to the database.
+/// 3. Invalidate only the cache keys that are directly affected by this market's
+///    resolution (specific market key, oracle result, statistics aggregates, and
+///    featured-markets list). Content pages and per-user bet lists are left intact
+///    because they are not affected by a single market resolution.
+/// 4. Cache invalidation only runs after a successful write — a failed DB update
+///    leaves the cache untouched.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolveMarketRequest {
+    /// The winning outcome index (0-based).
+    pub outcome_index: u32,
+}
+
 pub async fn resolve_market(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
-) -> Result<impl IntoResponse, ApiError> {
-    // This is a placeholder mutation endpoint for invalidation. Hook your real write flow here.
-    let mut invalidated = 0usize;
+    Json(payload): Json<ResolveMarketRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let map_err = |e: anyhow::Error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { message: e.to_string() }),
+        )
+    };
 
+    // 1. Persist the resolution to the database.
     state
-        .cache
-        .del(&keys::chain_market(market_id))
+        .db
+        .resolve_market(market_id, payload.outcome_index)
         .await
-        .map_err(into_api_error)?;
-    invalidated += 1;
+        .map_err(map_err)?;
 
-    let patterns = [
+    // 2. Invalidate only the keys affected by this market's resolution.
+    //    Broad prefix wildcards (api:v1:* / dbq:v1:*) are intentionally avoided
+    //    to keep the blast radius small.
+    let network = state.config.network_name();
+    let featured_limit = state.config.featured_limit;
+    let keys_to_del = [
+        keys::chain_market(market_id),
+        keys::chain_oracle_result(network, market_id),
         keys::api_statistics(),
         keys::api_featured_markets(),
-        format!("{}:*", keys::DBQ_PREFIX),
-        format!("{}:*", keys::API_PREFIX),
+        keys::dbq_statistics(),
+        keys::dbq_featured_markets(featured_limit),
     ];
 
-    for p in patterns {
-        let n = state
-            .cache
-            .del_by_pattern(&p)
-            .await
-            .map_err(into_api_error)?;
-        invalidated += n;
+    let mut invalidated = 0usize;
+    for key in &keys_to_del {
+        state.cache.del(key).await.map_err(map_err)?;
+        invalidated += 1;
     }
 
     state
         .metrics
-        .observe_invalidation("market_write", invalidated);
+        .observe_invalidation("market_resolve", invalidated);
+
+    tracing::info!(market_id, invalidated, "market resolved and cache invalidated");
 
     Ok((
         StatusCode::OK,
@@ -546,7 +574,14 @@ pub async fn resolve_market(
 
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
     let body = state.metrics.render().map_err(into_api_error)?;
-    Ok((StatusCode::OK, body))
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    ))
 }
 
 pub async fn blockchain_health(

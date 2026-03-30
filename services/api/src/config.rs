@@ -42,6 +42,15 @@ pub struct Config {
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub request_signing_secret: Option<String>,
+    /// When `true` the `/metrics` endpoint is publicly accessible (no auth).
+    /// Defaults to `false`. Set `METRICS_PUBLIC=true` only in trusted environments.
+    pub metrics_public: bool,
+    /// Optional IP allowlist for the `/metrics` endpoint.
+    /// When non-empty, requests must originate from one of these IPs even if
+    /// `metrics_public` is `false` (the API key check still applies unless
+    /// `metrics_public` is `true`).
+    /// Configured via `METRICS_ALLOWLIST_IPS` (comma-separated).
+    pub metrics_allowlist_ips: Vec<IpAddr>,
 }
 
 impl Config {
@@ -134,6 +143,18 @@ impl Config {
                 })
                 .unwrap_or_default(),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
+            metrics_public: env::var("METRICS_PUBLIC")
+                .ok()
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
+            metrics_allowlist_ips: env::var("METRICS_ALLOWLIST_IPS")
+                .ok()
+                .map(|ips| {
+                    ips.split(',')
+                        .filter_map(|ip| ip.trim().parse::<IpAddr>().ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
