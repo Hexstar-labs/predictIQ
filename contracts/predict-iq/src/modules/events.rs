@@ -200,3 +200,31 @@ pub fn emit_market_pruned(e: &Env, market_id: u64, pruned_at: u64) {
         pruned_at,
     );
 }
+
+pub fn emit_upgrade_initiated(e: &Env, initiator: Address, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_init"), initiator),
+        wasm_hash,
+    );
+}
+
+pub fn emit_upgrade_voted(e: &Env, voter: Address, vote_for: bool) {
+    e.events().publish(
+        (symbol_short!("upg_vote"), voter),
+        vote_for,
+    );
+}
+
+pub fn emit_upgrade_executed(e: &Env, executor: Address, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_exec"), executor),
+        wasm_hash,
+    );
+}
+
+pub fn emit_upgrade_rejected(e: &Env, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_rej"),),
+        wasm_hash,
+    );
+}

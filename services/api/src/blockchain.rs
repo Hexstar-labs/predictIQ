@@ -100,6 +100,7 @@ pub struct BlockchainHealth {
     pub is_healthy: bool,
     pub contract_reachable: bool,
     pub checked_at_unix: u64,
+    pub status: HealthStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +110,26 @@ pub struct ContractEvent {
     pub topic: String,
     pub tx_hash: Option<String>,
     pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayRequest {
+    pub from_ledger: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayProgress {
+    pub from_ledger: u32,
+    pub events_replayed: usize,
+    pub completed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -530,6 +551,13 @@ impl BlockchainClient {
                     is_healthy: latest > 0 && contract_reachable,
                     contract_reachable,
                     checked_at_unix,
+                    status: if latest > 0 && contract_reachable {
+                        HealthStatus::Healthy
+                    } else if latest > 0 {
+                        HealthStatus::Degraded
+                    } else {
+                        HealthStatus::Unhealthy
+                    },
                 })
             })
             .await?;
@@ -704,6 +732,50 @@ impl BlockchainClient {
         } else {
             tracing::warn!("watched_txs cap reached ({MAX_WATCHED}), dropping tx: {hash}");
         }
+    }
+
+    /// Replay missed events from `from_ledger` up to the current confirmed tip.
+    /// Idempotent: events are stored by their unique ID so re-running is safe.
+    /// Progress is persisted in Redis so callers can poll for completion.
+    pub async fn replay_events(&self, from_ledger: u32) -> anyhow::Result<ReplayProgress> {
+        let progress_key = keys::chain_replay_progress(&self.network, from_ledger);
+
+        // Return cached progress if already completed
+        if let Some(cached) = self.cache.get_json::<ReplayProgress>(&progress_key).await? {
+            if cached.completed {
+                return Ok(cached);
+            }
+        }
+
+        let latest = self.latest_ledger().await?;
+        let confirmed_tip = latest.saturating_sub(self.confirmation_ledger_lag);
+
+        let events = self.fetch_events_since(from_ledger).await?;
+        let events_replayed = events.len();
+
+        for event in events {
+            // Only store events up to the confirmed tip (idempotent by key)
+            if event.ledger > confirmed_tip {
+                continue;
+            }
+            let event_key = format!("{}:event:{}", keys::CHAIN_PREFIX, event.id);
+            self.cache
+                .set_json(&event_key, &event, Duration::from_secs(30 * 60))
+                .await?;
+        }
+
+        let progress = ReplayProgress {
+            from_ledger,
+            events_replayed,
+            completed: true,
+        };
+
+        self.cache
+            .set_json(&progress_key, &progress, Duration::from_secs(60 * 60))
+            .await?;
+
+        tracing::info!(from_ledger, events_replayed, "event replay completed");
+        Ok(progress)
     }
 
     pub fn start_background_tasks(self: Arc<Self>) {

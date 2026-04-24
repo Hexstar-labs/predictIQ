@@ -238,6 +238,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::resolve_market),
         )
         .route(
+            "/api/blockchain/replay",
+            post(handlers::blockchain_replay),
+        )
+        .route(
             "/api/v1/email/preview/:template_name",
             get(handlers::email_preview),
         )

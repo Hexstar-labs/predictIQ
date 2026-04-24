@@ -259,7 +259,7 @@ impl PredictIQ {
         crate::modules::governance::vote_for_upgrade(&e, voter, vote_for)
     }
 
-    pub fn execute_upgrade(e: Env) -> Result<(), ErrorCode> {
+    pub fn execute_upgrade(e: Env) -> Result<soroban_sdk::BytesN<32>, ErrorCode> {
         crate::modules::governance::execute_upgrade(&e)
     }
 
@@ -281,6 +281,10 @@ impl PredictIQ {
 
     pub fn get_timelock_duration(e: Env) -> u64 {
         crate::modules::governance::get_timelock_duration(&e)
+    }
+
+    pub fn emergency_pause(e: Env, voter: Address) -> Result<(), ErrorCode> {
+        crate::modules::governance::emergency_pause(&e, voter)
     }
 
     /// Prune (archive) a resolved market after 30 days grace period

@@ -159,4 +159,8 @@ pub mod keys {
     pub fn chain_sync_cursor(network: &str) -> String {
         format!("{CHAIN_PREFIX}:sync_cursor:{network}")
     }
+
+    pub fn chain_replay_progress(network: &str, from_ledger: u32) -> String {
+        format!("{CHAIN_PREFIX}:replay:{network}:{from_ledger}")
+    }
 }

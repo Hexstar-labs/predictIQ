@@ -748,6 +748,18 @@ pub async fn blockchain_tx_status(
     Ok((StatusCode::OK, Json(data)))
 }
 
+pub async fn blockchain_replay(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<crate::blockchain::ReplayRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let progress = state
+        .blockchain
+        .replay_events(payload.from_ledger)
+        .await
+        .map_err(into_api_error)?;
+    Ok((StatusCode::OK, Json(progress)))
+}
+
 pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = state.db.statistics_cached().await?;
     let _ = state
