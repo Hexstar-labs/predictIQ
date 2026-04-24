@@ -462,6 +462,46 @@ jobs:
           fi
         working-directory: contracts/predict-iq
 
+  e2e-betting-flow:
+    name: E2E — Betting Flow
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build frontend
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+
+      - name: Run betting flow E2E tests
+        run: npx playwright test e2e/user-journeys.spec.ts --project=chromium
+        env:
+          CI: true
+          BASE_URL: http://localhost:3000
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-betting-flow
+          path: frontend/playwright-report/
+          retention-days: 7
+
   all-tests-passed:
     name: All Tests Passed
     needs:
@@ -478,6 +518,7 @@ jobs:
       - oracle-quality-gate
       - format
       - build-optimized
+      - e2e-betting-flow
     runs-on: ubuntu-latest
     steps:
       - name: Success
