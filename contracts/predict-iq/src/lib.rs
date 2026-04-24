@@ -138,6 +138,18 @@ impl PredictIQ {
         crate::modules::fees::get_revenue(&e, token)
     }
 
+    pub fn set_fee_admin(e: Env, fee_admin: Address) -> Result<(), ErrorCode> {
+        crate::modules::fees::set_fee_admin(&e, fee_admin)
+    }
+
+    pub fn withdraw_protocol_fees(
+        e: Env,
+        token: Address,
+        recipient: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::fees::withdraw_protocol_fees(&e, &token, &recipient)
+    }
+
     pub fn claim_referral_rewards(
         e: Env,
         address: Address,
