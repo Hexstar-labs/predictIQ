@@ -7,6 +7,7 @@ mod config;
 mod db;
 mod email;
 mod handlers;
+mod idempotency;
 mod metrics;
 mod newsletter;
 mod pagination;
@@ -14,6 +15,7 @@ mod rate_limit;
 mod security;
 mod tracing_config;
 mod validation;
+mod versioning;
 
 use std::sync::Arc;
 
@@ -153,30 +155,31 @@ async fn main() -> anyhow::Result<()> {
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics))
-        .route("/api/blockchain/health", get(handlers::blockchain_health))
+        .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route(
-            "/api/blockchain/markets/:market_id",
+            "/api/v1/blockchain/markets/:market_id",
             get(handlers::blockchain_market_data),
         )
         .route(
-            "/api/blockchain/stats",
+            "/api/v1/blockchain/stats",
             get(handlers::blockchain_platform_stats),
         )
         .route(
-            "/api/blockchain/users/:user/bets",
+            "/api/v1/blockchain/users/:user/bets",
             get(handlers::blockchain_user_bets),
         )
         .route(
-            "/api/blockchain/oracle/:market_id",
+            "/api/v1/blockchain/oracle/:market_id",
             get(handlers::blockchain_oracle_result),
         )
         .route(
-            "/api/blockchain/tx/:tx_hash",
+            "/api/v1/blockchain/tx/:tx_hash",
             get(handlers::blockchain_tx_status),
         )
-        .route("/api/statistics", get(handlers::statistics))
-        .route("/api/markets/featured", get(handlers::featured_markets))
-        .route("/api/content", get(handlers::content))
+        .route("/api/v1/statistics", get(handlers::statistics))
+        .route("/api/v1/markets/featured", get(handlers::featured_markets))
+        .route("/api/v1/content", get(handlers::content))
+        .layer(middleware::from_fn(versioning::versioning_middleware))
         .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(middleware::from_fn(validation::request_validation_middleware))
         .layer(middleware::from_fn(validation::request_size_validation_middleware))
@@ -208,6 +211,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/newsletter/gdpr/delete",
             axum::routing::delete(handlers::newsletter_gdpr_delete),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            idempotency::idempotency_middleware,
+        ))
         .layer(middleware::from_fn(validation::content_type_validation_middleware))
         .layer(middleware::from_fn_with_state(
             rate_limiter.clone(),
@@ -227,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
     // Admin routes (with API key auth, IP whitelist, rate limiting, and audit logging)
     let admin_routes = Router::new()
         .route(
-            "/api/markets/:market_id/resolve",
+            "/api/v1/markets/:market_id/resolve",
             post(handlers::resolve_market),
         )
         .route(
@@ -254,6 +261,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/audit/statistics",
             get(handlers::audit_statistics),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            idempotency::idempotency_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             ip_whitelist.clone(),
             security::ip_whitelist_middleware,

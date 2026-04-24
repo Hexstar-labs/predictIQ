@@ -78,6 +78,9 @@ pub struct Config {
     // Distributed tracing configuration
     pub otlp_endpoint: Option<String>,
     pub trace_sample_rate: f64,
+    /// How long (in seconds) an idempotency key is retained in Redis.
+    /// Defaults to 86400 (24 hours). Set via `IDEMPOTENCY_WINDOW_SECS`.
+    pub idempotency_window_secs: u64,
 }
 
 impl Config {
@@ -234,7 +237,11 @@ impl Config {
             trace_sample_rate: env::var("TRACE_SAMPLE_RATE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.1), // Default 10% sampling
+                .unwrap_or(0.1),
+            idempotency_window_secs: env::var("IDEMPOTENCY_WINDOW_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(86400),
         }
     }
 
