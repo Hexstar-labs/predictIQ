@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
 use crate::modules::admin;
-use crate::types::{ConfigKey, MarketTier, GOV_TTL_HIGH_THRESHOLD, GOV_TTL_LOW_THRESHOLD};
+use crate::types::{ConfigKey, MarketTier, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD};
 use soroban_sdk::{contracttype, Address, Env, Symbol};
 
 const BPS_DENOMINATOR: i128 = 10_000;
@@ -17,7 +17,7 @@ pub enum DataKey {
 fn bump_config_ttl(e: &Env, key: &ConfigKey) {
     e.storage()
         .persistent()
-        .extend_ttl(key, GOV_TTL_LOW_THRESHOLD, GOV_TTL_HIGH_THRESHOLD);
+        .extend_ttl(key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
 }
 
 pub fn get_base_fee(e: &Env) -> i128 {
