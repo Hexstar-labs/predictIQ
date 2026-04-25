@@ -4,6 +4,7 @@
  */
 
 import { getEnvConfig } from './env';
+import { apiCache, CACHE_TTL } from './cache';
 
 const config = getEnvConfig();
 const BASE_URL = config.apiUrl.replace(/\/$/, "");
